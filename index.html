@@ -59,9 +59,9 @@
   </div>
 
   <script>
-    // Прокси для обхода CORS
+    // Прокси для обхода CORS с корректным URI-кодированием
     function proxy(url) {
-      return 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url);
+      return 'https://api.allorigins.win/raw?url=' + encodeURI(url);
     }
 
     const API = {
