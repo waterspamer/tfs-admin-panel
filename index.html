@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Admin Panel</title>
+  <style>
+    body { margin:0; font-family: Arial, sans-serif; display: flex; height: 100vh; }
+    #sidebar { width: 30%; border-right: 1px solid #ccc; padding: 10px; box-sizing: border-box; overflow-y: auto; }
+    #details { flex:1; padding:10px; box-sizing: border-box; overflow-y: auto; }
+    table { width:100%; border-collapse: collapse; margin-bottom:10px; }
+    th, td { border:1px solid #ddd; padding:4px; text-align:left; }
+    th { background:#f7f7f7; }
+    button { margin:2px; }
+    #histogram { width:100%; height:200px; background:#111; display:block; }
+    .chart-controls button { margin-right:4px; }
+    .car-box { border:1px solid #ccc; padding:6px; margin-bottom:6px; }
+  </style>
+</head>
+<body>
+
+  <div id="sidebar">
+    <h2>Users</h2>
+    <div>
+      <button id="refreshUsers">Refresh</button>
+      <label>Page: <input type="range" id="pageSlider" min="0" value="0"></label>
+      <span id="pageInfo"></span>
+    </div>
+    <table id="userTable">
+      <thead>
+        <tr><th>Username</th><th>Created</th><th>Action</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+
+    <h3>Registration Stats</h3>
+    <div class="chart-controls">
+      <button data-period="0">Last Hour</button>
+      <button data-period="1">Last Day</button>
+      <button data-period="2">Last Month</button>
+    </div>
+    <canvas id="histogram"></canvas>
+  </div>
+
+  <div id="details">
+    <h2>User Info</h2>
+    <div id="userInfo">Select a user</div>
+  </div>
+
+  <script>
+  // === Адреса ваших API ===
+  const API = {
+    GET_USERS:       'https://tonforspeed.space/api/user/get_all_users/',
+    GET_USER_INFO:   'https://tonforspeed.space/api/balance/get_user_game_info',       // + userId
+    GET_USER_CARS:   'https://tonforspeed.space/api/car/get_user_cars',  // + userId
+    GET_CAR_EXT:     'https://tonforspeed.space/api/car/get_user_car_extended',   // + carId
+    MANUAL_ACC:      'https://tonforspeed.space/api/balance/manual_operation',
+    MANUAL_ACC_HARD: 'https://tonforspeed.space/api/balance/manual_operation'
+    // ... ваши остальные endpoints
+  };
+
+  // === Состояние ===
+  let allUsers = [];
+  let currentPage = 0;
+  const perPage = 15;
+  let selectedUser = null;
+
+  // === Элементы DOM ===
+  const refreshBtn = document.getElementById('refreshUsers');
+  const pageSlider = document.getElementById('pageSlider');
+  const pageInfo   = document.getElementById('pageInfo');
+  const userTbody  = document.querySelector('#userTable tbody');
+  const userInfoDiv= document.getElementById('userInfo');
+  const histogram  = document.getElementById('histogram');
+  const chartCtx   = histogram.getContext('2d');
+  let chartPeriod = 0;
+
+  // === Инициализация ===
+  refreshBtn.onclick = loadUsers;
+  pageSlider.oninput = () => { currentPage = +pageSlider.value; renderUserTable(); };
+  document.querySelectorAll('.chart-controls button').forEach(btn => {
+    btn.onclick = () => { chartPeriod = +btn.dataset.period; drawChart(); };
+  });
+
+  // === Загрузка списка пользователей ===
+  async function loadUsers() {
+    const res = await fetch(API.GET_USERS);
+    allUsers = await res.json();  // ожидаем массив {user_id, username, created_at}
+    currentPage = 0;
+    pageSlider.max = Math.max(0, Math.ceil(allUsers.length/perPage)-1);
+    renderUserTable();
+    drawChart();
+  }
+
+  function renderUserTable() {
+    userTbody.innerHTML = '';
+    const start = currentPage*perPage;
+    const slice = allUsers.slice(start, start+perPage);
+    slice.forEach(u => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${u.username}</td>
+        <td>${new Date(u.created_at).toLocaleString()}</td>
+        <td><button data-id="${u.user_id}">Info</button></td>
+      `;
+      tr.querySelector('button').onclick = () => selectUser(u);
+      userTbody.appendChild(tr);
+    });
+    pageInfo.textContent = `${start+1}-${start+slice.length} / ${allUsers.length}`;
+    pageSlider.value = currentPage;
+  }
+
+  // === Выбор пользователя ===
+  async function selectUser(u) {
+    selectedUser = u;
+    userInfoDiv.innerHTML = '<em>Loading...</em>';
+    // параллельно запрос баланса и машин
+    const [infoRes, carsRes] = await Promise.all([
+      fetch(API.GET_USER_INFO + u.user_id),
+      fetch(API.GET_USER_CARS + u.user_id)
+    ]);
+    const info = await infoRes.json();
+    const cars = await carsRes.json();
+    renderUserInfo(info, cars);
+  }
+
+  function renderUserInfo(info, cars) {
+    userInfoDiv.innerHTML = '';
+    // Баланс и кнопки
+    const bal = document.createElement('div');
+    bal.innerHTML = `
+      <p><strong>${info.username}</strong></p>
+      <p>Internal: ${info.internal_balance}</p>
+      <p>Hard: ${info.hard_balance}</p>
+      <p>Exp: ${info.exp_value}</p>
+      <p>Level: ${info.level}</p>
+    `;
+    const btnSoft = document.createElement('button');
+    btnSoft.textContent = 'Add 100 000 Soft';
+    btnSoft.style.background = 'orange'; btnSoft.style.color='white';
+    btnSoft.onclick = ()=>manualOp(info.user_id,100000,'MANUAL_ACC');
+    const btnHard = document.createElement('button');
+    btnHard.textContent = 'Add 1 000 Hard';
+    btnHard.style.background = 'blue'; btnHard.style.color='white';
+    btnHard.onclick = ()=>manualOp(info.user_id,1000,'MANUAL_ACC_HARD');
+    bal.appendChild(btnSoft); bal.appendChild(btnHard);
+    userInfoDiv.appendChild(bal);
+
+    // Машины
+    const carsDiv = document.createElement('div');
+    carsDiv.innerHTML = '<h4>Cars</h4>';
+    cars.forEach(car => {
+      const box = document.createElement('div');
+      box.className='car-box';
+      box.innerHTML = `<strong>${car.name}</strong><div id="ext${car.id}">Loading...</div>`;
+      const del = document.createElement('button');
+      del.textContent='Delete Car'; del.onclick=()=>deleteCar(car.id);
+      box.appendChild(del);
+      carsDiv.appendChild(box);
+      // запрос extended
+      fetch(API.GET_CAR_EXT + car.id)
+        .then(r=>r.json())
+        .then(w=>{
+          const e = w.user_car[0];
+          document.getElementById(`ext${car.id}`).innerHTML =
+            `Soft inv: ${e.sum_of_investments}<br>
+             Hard inv: ${e.sum_of_investments_hard}<br>
+             Class: ${e.car_class}`;
+        });
+    });
+    userInfoDiv.appendChild(carsDiv);
+  }
+
+  // === Ручные операции ===
+  async function manualOp(userId, amount, key) {
+    await fetch(API[key], { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ user_id:userId, amount, operation_key:key })
+    });
+    alert('Done');
+    selectUser(selectedUser);
+  }
+
+  // === Удалить машину ===
+  async function deleteCar(carId) {
+    if(!confirm('Delete car?')) return;
+    await fetch(`${API.GET_CAR_EXT}${carId}`, { method:'DELETE' });
+    selectUser(selectedUser);
+  }
+
+  // === Рисуем гистограмму ===
+  function drawChart() {
+    const now = new Date();
+    let buckets, counts=[], labels=[];
+    if(chartPeriod===0){
+      buckets=60;
+      for(let i=0;i<buckets;i++){
+        const from=new Date(now.getTime()-(i+1)*60000);
+        const to  =new Date(now.getTime()-i*60000);
+        counts.unshift(allUsers.filter(u=>
+          new Date(u.created_at)>=from && new Date(u.created_at)<to
+        ).length);
+        labels.unshift( `${from.getHours().toString().padStart(2,'0')}:${from.getMinutes().toString().padStart(2,'0')}` );
+      }
+    } else if(chartPeriod===1){
+      buckets=24;
+      for(let i=0;i<buckets;i++){
+        const from=new Date(now.getTime()-(i+1)*3600000);
+        const to  =new Date(now.getTime()-i*3600000);
+        counts.unshift(allUsers.filter(u=>
+          new Date(u.created_at)>=from && new Date(u.created_at)<to
+        ).length);
+        labels.unshift( `${from.getHours().toString().padStart(2,'0')}:00` );
+      }
+    } else {
+      buckets=30;
+      for(let i=0;i<buckets;i++){
+        const day=new Date(now.getFullYear(),now.getMonth(),now.getDate()-i);
+        const next=new Date(now.getFullYear(),now.getMonth(),now.getDate()-i+1);
+        counts.unshift(allUsers.filter(u=>
+          new Date(u.created_at)>=day && new Date(u.created_at)<next
+        ).length);
+        labels.unshift( `${(day.getMonth()+1).toString().padStart(2,'0')}-${day.getDate().toString().padStart(2,'0')}` );
+      }
+    }
+
+    // clear
+    chartCtx.clearRect(0,0,histogram.width,histogram.height);
+    const max = Math.max(...counts,1);
+    const barW = histogram.width/buckets;
+    // draw bars + numbers
+    for(let i=0;i<buckets;i++){
+      const h = counts[i]/max*(histogram.height-30);
+      chartCtx.fillStyle='lime';
+      chartCtx.fillRect(i*barW, histogram.height-h-20, barW-1, h);
+      // number
+      chartCtx.fillStyle='white';
+      chartCtx.font='10px sans-serif';
+      chartCtx.fillText(counts[i], i*barW+barW/2-5, histogram.height-h-25);
+      // label every Nth
+      if(i%Math.ceil(buckets/10)===0){
+        chartCtx.fillText(labels[i], i*barW+2, histogram.height-5);
+      }
+    }
+  }
+
+  // === Авто-старт ===
+  loadUsers();
+  </script>
+
+</body>
+</html>
